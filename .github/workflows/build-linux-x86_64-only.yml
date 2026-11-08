@@ -89,6 +89,34 @@ jobs:
           grep -q 'file(SHA512' CMakeModules/CPMUtil.cmake
           echo "CPM downloader patched OK"
 
+      - name: Fix v4.1 Linux compile errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'FIX_EOF'
+          from pathlib import Path
+
+          cache = Path('src/video_core/renderer_vulkan/vk_pipeline_cache.cpp')
+          t = cache.read_text(encoding='utf-8')
+          old = '    using Status = VideoCommon::PipelineCacheMergeResult::Status;'
+          assert old in t, 'Status alias not found'
+          t = t.replace(old, '#ifdef Status\n#undef Status\n#endif\n    using MergePipelineStatus = VideoCommon::PipelineCacheMergeResult::Status;', 1)
+          n = t.count('case Status::')
+          assert n == 7, 'unexpected case count: %d' % n
+          t = t.replace('case Status::', 'case MergePipelineStatus::')
+          cache.write_text(t, encoding='utf-8')
+
+          gp = Path('src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp')
+          s = gp.read_text(encoding='utf-8')
+          old2 = 'void NoteDrawReuseProbeFrame() {'
+          assert old2 in s, 'probe function not found'
+          s = s.replace(old2, 'void NoteDrawReuseProbeFrame();\nvoid NoteDrawReuseProbeFrame() {', 1)
+          gp.write_text(s, encoding='utf-8')
+          print('patched v4.1 Linux compile errors')
+          FIX_EOF
+          grep -q 'MergePipelineStatus' src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+          echo "Linux compile fixes applied"
+
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'linux')
         shell: bash
