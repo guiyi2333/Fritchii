@@ -40,6 +40,55 @@ jobs:
         with:
           ref: fritchii-v4.1
 
+      - name: Make CPM downloads retry-safe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PATCH_EOF'
+          from pathlib import Path
+
+          p = Path('CMakeModules/CPMUtil.cmake')
+          t = p.read_text(encoding='utf-8')
+          start = t.index('function(cpm_download url file)')
+          end = t.index('\nendfunction()', start) + len('\nendfunction()')
+          new = r'''function(cpm_download url file)
+              echo("Downloading ${url} to ${file}")
+              list(LENGTH ARGN argn_len)
+              if(argn_len GREATER 0)
+                  list(GET ARGN 0 hash)
+              else()
+                  set(hash "")
+              endif()
+
+              set(code 1)
+              foreach(i RANGE 5)
+                  file(DOWNLOAD ${url} ${file} STATUS ret)
+                  list(GET ret 0 code)
+                  if (code EQUAL 0)
+                      if (NOT hash STREQUAL "")
+                          file(SHA512 ${file} actual_hash)
+                          if (NOT actual_hash STREQUAL hash)
+                              set(code 1)
+                          endif()
+                      endif()
+                  endif()
+                  if (code EQUAL 0)
+                      break()
+                  endif()
+                  echo_error("Download failed or hash mismatch. Trying again in 5 seconds")
+                  sleep(5)
+              endforeach()
+
+              if (NOT code EQUAL 0)
+                  fatal("Download for ${url} failed after 5 tries")
+              endif()
+          endfunction()'''
+          p.write_text(t[:start] + new + t[end:], encoding='utf-8')
+          print('patched cpm_download')
+          PATCH_EOF
+          grep -q 'file(SHA512' CMakeModules/CPMUtil.cmake
+          echo "CPM downloader patched OK"
+
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'linux')
         shell: bash
@@ -308,7 +357,8 @@ jobs:
             "-DCMAKE_CXX_FLAGS=$profile"
 
       - name: Save CPM downloads
-        if: steps.cpm-cache.outputs.cache-hit != 'true'
+        if: always() && steps.cpm-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: .cache/cpm
